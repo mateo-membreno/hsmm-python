@@ -19,17 +19,21 @@ struct Model {
     std::vector<double> pi, A, P;
 
     Model(int N_, int D_, const double* lpi, const double* lA, const double* lP)
-        : N(N_), D(D_),
-          log_pi(lpi, lpi + N_),
-          log_A(lA, lA + std::size_t(N_) * N_),
-          log_P(lP, lP + std::size_t(N_) * D_) {
-        if (N < 1 || D < 1) throw std::invalid_argument("N and D must be >= 1");
+        : N(checked_dim(N_, "N")), D(checked_dim(D_, "D")),
+          log_pi(lpi, lpi + N),
+          log_A(lA, lA + std::size_t(N) * N),
+          log_P(lP, lP + std::size_t(N) * D) {
         pi = exp_of(log_pi);
         A = exp_of(log_A);
         P = exp_of(log_P);
     }
 
 private:
+    static int checked_dim(int v, const char* name) {
+        if (v < 1) throw std::invalid_argument(std::string(name) + " must be >= 1");
+        return v;
+    }
+
     static std::vector<double> exp_of(const std::vector<double>& v) {
         std::vector<double> out(v.size());
         for (std::size_t i = 0; i < v.size(); ++i) out[i] = std::exp(v[i]);
