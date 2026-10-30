@@ -259,3 +259,66 @@ def test_t_save_load_roundtrip(tmp_path):
         f1, f2 = model.filter(), loaded.filter()
         for y in Y[:10]:
             np.testing.assert_array_equal(f1.update(y)[0], f2.update(y)[0])
+
+
+def _valid_params():
+    log_pi, log_A, log_P, means, vars_ = random_model(np.random.default_rng(11), N=3, D=4, K=2)
+    return log_pi, log_A, log_P, compute_log_emissions(np.zeros((5, 2)), means, vars_)
+
+
+def _with(**edits):
+    log_pi, log_A, log_P, log_B = _valid_params()
+    p = {"log_pi": log_pi.copy(), "log_A": log_A.copy(), "log_P": log_P.copy()}
+    for k, fn in edits.items():
+        fn(p[k])
+    return log_B, p["log_pi"], p["log_A"], p["log_P"]
+
+
+def _set(idx, val):
+    def f(a):
+        a[idx] = val
+    return f
+
+
+def _renormalise_row_with_diag(i, diag_prob):
+    def f(A):
+        off = np.exp(A[i]).copy(); off[i] = 0; off *= (1 - diag_prob) / off.sum()
+        off[i] = diag_prob
+        with np.errstate(divide="ignore"):
+            A[i] = np.log(off)
+    return f
+
+
+BAD_MODELS = {
+    "NaN in log_A": (dict(log_A=_set((0, 1), np.nan)), r"log_A\[0, 1\].*NaN"),
+    "NaN in log_pi": (dict(log_pi=_set(1, np.nan)), r"log_pi\[1\]"),
+    "+inf in log_P": (dict(log_P=_set((2, 3), np.inf)), r"log_P\[2, 3\]"),
+    "positive log-prob": (dict(log_P=_set((1, 0), 0.5)), r"log_P\[1, 0\].*<= 0"),
+    "pi not normalised": (dict(log_pi=lambda a: a.__isub__(0.3)), r"log_pi sums to"),
+    "A row not normalised": (dict(log_A=lambda a: a.__setitem__((2, 0), a[2, 0] - 1.0)), r"log_A row 2 sums to"),
+    "P row not normalised": (dict(log_P=lambda a: a.__setitem__((1, 1), a[1, 1] - 1.0)), r"log_P row 1 sums to"),
+    "self-transition allowed": (dict(log_A=_renormalise_row_with_diag(1, 0.2)), r"log_A\[1, 1\] must be -inf"),
+    "state with no exit": (dict(log_A=_set((0, slice(None)), -np.inf)), r"log_A row 0 sums to"),
+}
+
+
+@pytest.mark.parametrize("name", BAD_MODELS)
+def test_invalid_model_parameters_rejected_everywhere(name):
+    edits, pattern = BAD_MODELS[name]
+    log_B, log_pi, log_A, log_P = _with(**edits)
+    for call in (
+        lambda: _core.sequence_loglik(log_B, log_pi, log_A, log_P),
+        lambda: _core.viterbi(log_B, log_pi, log_A, log_P),
+        lambda: _core.Filter(log_pi, log_A, log_P),
+    ):
+        with pytest.raises(ValueError, match=pattern):
+            call()
+
+
+def test_valid_model_still_accepted_and_single_state_rejected():
+    log_B, log_pi, log_A, log_P = _with()
+    assert np.isfinite(_core.sequence_loglik(log_B, log_pi, log_A, log_P))
+    with pytest.raises(ValueError, match="at least two"):
+        _core.Filter(np.zeros(1), np.full((1, 1), -np.inf), np.log(np.full((1, 4), 0.25)))
+    with pytest.raises(ValueError, match="at least two"):
+        HSMM(1, 5, seed=0).fit(np.random.default_rng(0).normal(size=(30, 1)))
